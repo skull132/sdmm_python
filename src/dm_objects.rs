@@ -19,40 +19,6 @@ impl DmVariable {
             value: var.value.constant.clone()
         }
     }
-
-    fn list_repr_impl(list: &Box<[(Constant, Option<Constant>)]>) -> String {
-        let mut repr_list = Vec::new();
-        for (key, value) in list.as_ref() {
-            let key_repr = DmVariable::value_repr_impl(key);
-
-            if let Some(value) = value {
-                let value_repr = DmVariable::value_repr_impl(value);
-                let formatted = format!("{} = {}", key_repr, value_repr);
-                repr_list.push(formatted);
-            } else {
-                repr_list.push(key_repr);
-            }
-        }
-
-        return format!("list({})", repr_list.join(", ").as_str());
-    }
-
-    fn prefab_repr_impl(prefab: &Box<Pop>) -> String {
-        let formatter = FormatTreePath(prefab.as_ref().path.as_ref());
-        return format!("{}", formatter);
-    }
-
-    fn value_repr_impl(value: &Constant) -> String {
-        match value {
-            Constant::Null(_) => "Null".to_string(),
-            Constant::List(l) => DmVariable::list_repr_impl(l),
-            Constant::Prefab(p) => DmVariable::prefab_repr_impl(p),
-            Constant::String(s) => s.as_ref().to_string(),
-            Constant::Resource(s) => s.as_ref().to_string(),
-            Constant::Float(f) => f.to_string(),
-            _ => "unkn".to_string()
-        }
-    }
 }
 
 #[pymethods]
@@ -64,7 +30,7 @@ impl DmVariable {
 
     fn value_repr(&self) -> PyResult<String> {
         if let Some(var) = &self.value {
-            return Ok(DmVariable::value_repr_impl(var));
+            return Ok(format!("{}", var));
         } else {
             return Ok("Null".to_string());
         }
