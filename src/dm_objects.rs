@@ -1,0 +1,249 @@
+use std::sync::Arc;
+use dm::ast::FormatTreePath;
+use dm::constants::{Constant, Pop};
+use dm::objtree::{NodeIndex, ObjectTree, TypeProc, TypeRef, TypeVar};
+use pyo3::prelude::*;
+use pyo3::types::*;
+
+#[pyclass]
+pub struct DmVariable {
+    #[pyo3(get)]
+    pub name: String,
+    pub value: Option<Constant>,
+}
+
+impl DmVariable {
+    pub fn new(name: String, var: &TypeVar) -> Self {
+        return DmVariable {
+            name: name,
+            value: var.value.constant.clone()
+        }
+    }
+
+    fn list_repr_impl(list: &Box<[(Constant, Option<Constant>)]>) -> String {
+        let mut repr_list = Vec::new();
+        for (key, value) in list.as_ref() {
+            let key_repr = DmVariable::value_repr_impl(key);
+
+            if let Some(value) = value {
+                let value_repr = DmVariable::value_repr_impl(value);
+                let formatted = format!("{} = {}", key_repr, value_repr);
+                repr_list.push(formatted);
+            } else {
+                repr_list.push(key_repr);
+            }
+        }
+
+        return format!("list({})", repr_list.join(", ").as_str());
+    }
+
+    fn prefab_repr_impl(prefab: &Box<Pop>) -> String {
+        let formatter = FormatTreePath(prefab.as_ref().path.as_ref());
+        return format!("{}", formatter);
+    }
+
+    fn value_repr_impl(value: &Constant) -> String {
+        match value {
+            Constant::Null(_) => "Null".to_string(),
+            Constant::List(l) => DmVariable::list_repr_impl(l),
+            Constant::Prefab(p) => DmVariable::prefab_repr_impl(p),
+            Constant::String(s) => s.as_ref().to_string(),
+            Constant::Resource(s) => s.as_ref().to_string(),
+            Constant::Float(f) => f.to_string(),
+            _ => "unkn".to_string()
+        }
+    }
+}
+
+#[pymethods]
+impl DmVariable {
+    #[getter]
+    fn has_value(&self) -> bool {
+        return self.value.is_some();
+    }
+
+    fn value_repr(&self) -> PyResult<String> {
+        if let Some(var) = &self.value {
+            return Ok(DmVariable::value_repr_impl(var));
+        } else {
+            return Ok("Null".to_string());
+        }
+    }
+
+    fn value_is_num(&self) -> PyResult<bool> {
+        if let Some(var) = &self.value {
+            match var {
+                Constant::Float(_) => Ok(true),
+                _ => Ok(false)
+            }
+        } else {
+            return Err(pyo3::exceptions::PyException::new_err("Variable has no value.".to_owned()));
+        }
+    }
+
+    fn value_is_string(&self) -> PyResult<bool> {
+        if let Some(var) = &self.value {
+            match var {
+                Constant::String(_) => Ok(true),
+                _ => Ok(false)
+            }
+        } else {
+            return Err(pyo3::exceptions::PyException::new_err("Variable has no value.".to_owned()));
+        }
+    }
+
+    fn value_is_resource_literal(&self) -> PyResult<bool> {
+        if let Some(var) = &self.value {
+            match var {
+                Constant::Resource(_) => Ok(true),
+                _ => Ok(false)
+            }
+        } else {
+            return Err(pyo3::exceptions::PyException::new_err("Variable has no value.".to_owned()));
+        }
+    }
+
+    fn value_is_list(&self) -> PyResult<bool> {
+        if let Some(var) = &self.value {
+            match var {
+                Constant::List(_) => Ok(true),
+                _ => Ok(false)
+            }
+        } else {
+            return Err(pyo3::exceptions::PyException::new_err("Variable has no value.".to_owned()));
+        }
+    }
+
+    fn value_is_null(&self) -> PyResult<bool> {
+        if let Some(var) = &self.value {
+            match var {
+                Constant::Null(_) => Ok(true),
+                _ => Ok(false)
+            }
+        } else {
+            return Err(pyo3::exceptions::PyException::new_err("Variable has no value.".to_owned()));
+        }
+    }
+}
+
+#[pyclass]
+pub struct DmProc {
+    #[pyo3(get)]
+    pub name: String
+}
+
+impl DmProc {
+    pub fn new(name: String, proc: &TypeProc) -> Self {
+        return DmProc {
+            name: name,
+        };
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
+pub struct DmObject {
+    #[pyo3(get)]
+    pub path: String,
+
+    vars: Py<PyDict>,
+    procs: Py<PyDict>,
+
+    object_tree: Arc<ObjectTree>,
+    node_index: NodeIndex,
+
+    caches_set: bool,
+}
+
+impl DmObject {
+    pub fn new(py: &Python, object_tree: Arc<ObjectTree>, type_ref: TypeRef) -> Self {
+        let dm_object = DmObject{
+            path: type_ref.path.to_owned(),
+            vars: PyDict::new(*py).into(),
+            procs: PyDict::new(*py).into(),
+            object_tree: object_tree,
+            node_index: type_ref.index(),
+            caches_set: false
+        };
+
+        return dm_object;
+    }
+
+    pub fn is_root_node(&self) -> bool {
+        return self.path.is_empty();
+    }
+
+    pub fn get_type_ref(&self) -> TypeRef {
+        self.object_tree.expect(self.path.as_str())
+    }
+
+    fn ensure_type_cache_exists(& mut self, py: Python) {
+        if self.caches_set {
+            return;
+        }
+
+        self.caches_set = true;
+
+        let vars_list = self.vars.as_ref(py);
+        let procs_list = self.procs.as_ref(py);
+        let type_ref = self.get_type_ref();
+
+        let mut f = |current_type_ref: TypeRef| {
+            for (name, var) in &current_type_ref.vars {
+                let already_present = vars_list.contains(name).unwrap_or(false);
+
+                if !already_present {
+                    let var = DmVariable::new(name.to_string(), var);
+                    let var = Py::new(py, var).unwrap();
+                    vars_list.set_item(name, var).unwrap();
+                }
+            }
+
+            for (name, proc) in &current_type_ref.procs {
+                let already_present = procs_list.contains(name).unwrap_or(false);
+
+                if !already_present {
+                    let proc = DmProc::new(name.to_string(), proc);
+                    let proc = Py::new(py, proc).unwrap();
+                    procs_list.set_item(name, proc).unwrap();
+                }
+            }
+        };
+
+        type_ref.visit_parent_types(&mut f);
+    }
+}
+
+#[pymethods]
+impl DmObject {
+    #[getter(is_root_node)]
+    fn is_root_node_py(&self) -> PyResult<bool> {
+        return Ok(self.is_root_node());
+    }
+
+    #[getter(vars)]
+    fn get_vars(& mut self, py: Python) -> PyResult<&Py<PyDict>> {
+        self.ensure_type_cache_exists(py);
+
+        Ok(&self.vars)
+    }
+
+    #[getter(procs)]
+    fn get_procs(& mut self, py: Python) -> PyResult<&Py<PyDict>> {
+        self.ensure_type_cache_exists(py);
+
+        Ok(&self.procs)
+    }
+
+    fn overrides_variable(& mut self, py: Python, name: String) -> PyResult<bool> {
+        self.ensure_type_cache_exists(py);
+
+        let type_ref = self.get_type_ref();
+
+        if self.vars.as_ref(py).contains(&name).unwrap_or(false) {
+            return Ok(type_ref.get().vars.contains_key(&name));
+        } else {
+            return Err(pyo3::exceptions::PyException::new_err("Type does not contain such a variable."));
+        }
+    }
+}
