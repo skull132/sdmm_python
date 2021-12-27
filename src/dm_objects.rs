@@ -2,6 +2,7 @@ use std::sync::Arc;
 use dm::ast::FormatTreePath;
 use dm::constants::{Constant, Pop};
 use dm::objtree::{NodeIndex, ObjectTree, TypeProc, TypeRef, TypeVar};
+use pyo3::iter::IterNextOutput::Return;
 use pyo3::prelude::*;
 use pyo3::types::*;
 
@@ -19,6 +20,34 @@ impl DmVariable {
             value: var.value.constant.clone()
         }
     }
+
+    fn constant_to_pyobject(&self, py: Python, var: &Constant) -> PyResult<Py<PyAny>> {
+        return match var {
+            Constant::List(l) => self.list_to_pyobject(py, l),
+            Constant::Float(f) => Ok(f.into_py(py)),
+            Constant::Resource(s) => Ok(s.as_ref().into_py(py)),
+            Constant::String(s) => Ok(s.as_ref().into_py(py)),
+            _ => Ok(format!("{}", var).into_py(py))
+        };
+    }
+
+    fn list_to_pyobject(&self, py: Python, list: &Box<[(Constant, Option<Constant>)]>) -> PyResult<Py<PyAny>> {
+        let mut dict = PyDict::new(py);
+
+        for (key, value) in list.as_ref() {
+            let key = self.constant_to_pyobject(py, key)?;
+
+            let value = if let Some(value) = value {
+                self.constant_to_pyobject(py, value)?
+            } else {
+                py.None().into()
+            };
+
+            dict.set_item(key, value)?;
+        }
+
+        return Ok(dict.into_py(py));
+    }
 }
 
 #[pymethods]
@@ -26,6 +55,14 @@ impl DmVariable {
     #[getter]
     fn has_value(&self) -> bool {
         return self.value.is_some();
+    }
+
+    fn value(&self, py: Python) -> PyResult<Py<PyAny>> {
+        if let Some(var) = &self.value {
+            return self.constant_to_pyobject(py, var);
+        } else {
+            return Ok(py.None().into());
+        }
     }
 
     fn value_repr(&self) -> PyResult<String> {
